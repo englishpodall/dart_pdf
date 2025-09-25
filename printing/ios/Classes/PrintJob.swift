@@ -29,7 +29,7 @@ var selectedPrinters = [String: UIPrinter]()
 // Holds the printer after it was picked
 var pickedPrinter: UIPrinter?
 
-public class PrintJob: UIPrintPageRenderer, UIPrintInteractionControllerDelegate {
+public class PrintJob: UIPrintPageRenderer, UIPrintInteractionControllerDelegate, WKNavigationDelegate {
     private var printing: PrintingPlugin
     public var index: Int
     private var pdfDocument: CGPDFDocument?
@@ -41,6 +41,9 @@ public class PrintJob: UIPrintPageRenderer, UIPrintInteractionControllerDelegate
     private var dynamic = false
     private var currentSize: CGSize?
     private var forceCustomPrintPaper = false
+    private var htmlRect: CGRect?
+    private var htmlMargin: CGRect?
+    private weak var htmlWebView: WKWebView?
 
     public init(printing: PrintingPlugin, index: Int) {
         self.printing = printing
@@ -273,65 +276,97 @@ public class PrintJob: UIPrintPageRenderer, UIPrintInteractionControllerDelegate
         let activityViewController = UIActivityViewController(activityItems: [fileURL, body as Any], applicationActivities: nil)
         activityViewController.setValue(subject, forKey: "subject")
         if UIDevice.current.userInterfaceIdiom == .pad {
-            if let controller = UIApplication.shared.keyWindow?.rootViewController {
+            if let controller = PrintJob_safeRootViewController() {
                 activityViewController.popoverPresentationController?.sourceView = controller.view
                 activityViewController.popoverPresentationController?.sourceRect = rect
             }
         }
-        UIApplication.shared.keyWindow?.rootViewController?.present(activityViewController, animated: true)
+        if let presenter = PrintJob_safeTopViewController() {
+            presenter.present(activityViewController, animated: true)
+        }
     }
 
     func convertHtml(_ data: String, withPageSize rect: CGRect, andMargin margin: CGRect, andBaseUrl baseUrl: URL?) {
-        guard let window = UIApplication.shared.delegate?.window,
-              let viewController = window?.rootViewController else {
-            printing.onHtmlRendered(printJob: self, pdfData: Data())
+        // Find a root view controller safely
+        let rootViewController: UIViewController? = {
+            if let vc = UIApplication.shared.keyWindow?.rootViewController {
+                return vc
+            }
+            if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+               let win = scene.windows.first(where: { $0.isKeyWindow }) {
+                return win.rootViewController
+            }
+            return UIApplication.shared.windows.first?.rootViewController
+        }()
+
+        guard let viewController = rootViewController else {
+            printing.onHtmlError(printJob: self, error: "No rootViewController to render HTML")
             return
         }
-        
+
         let wkWebView = WKWebView(frame: viewController.view.bounds)
         wkWebView.isHidden = true
         wkWebView.tag = 100
+        wkWebView.navigationDelegate = self
         viewController.view.addSubview(wkWebView)
+
+        // Save context for didFinish
+        htmlRect = rect
+        htmlMargin = margin
+        htmlWebView = wkWebView
+
         wkWebView.loadHTMLString(data, baseURL: baseUrl ?? Bundle.main.bundleURL)
+    }
 
-        // Use a simple timer instead of key-value observing to avoid key path issues
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            // assign the print formatter to the print page renderer
-            let renderer = UIPrintPageRenderer()
-            renderer.addPrintFormatter(wkWebView.viewPrintFormatter(), startingAtPageAt: 0)
+    public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard let rect = htmlRect, let margin = htmlMargin else {
+            printing.onHtmlError(printJob: self, error: "Missing page size or margin for HTML rendering")
+            return
+        }
 
-            // assign paperRect and printableRect values
-            renderer.setValue(rect, forKey: "paperRect")
-            renderer.setValue(margin, forKey: "printableRect")
+        // assign the print formatter to the print page renderer
+        let renderer = UIPrintPageRenderer()
+        renderer.addPrintFormatter(webView.viewPrintFormatter(), startingAtPageAt: 0)
 
-            // create pdf context and draw each page
-            let pdfData = NSMutableData()
-            UIGraphicsBeginPDFContextToData(pdfData, rect, nil)
+        // assign paperRect and printableRect values
+        renderer.setValue(rect, forKey: "paperRect")
+        renderer.setValue(margin, forKey: "printableRect")
 
-            for i in 0 ..< renderer.numberOfPages {
-                UIGraphicsBeginPDFPage()
-                renderer.drawPage(at: i, in: UIGraphicsGetPDFContextBounds())
-            }
+        let pdfData = NSMutableData()
+        UIGraphicsBeginPDFContextToData(pdfData, rect, nil)
 
-            UIGraphicsEndPDFContext()
+        for i in 0 ..< renderer.numberOfPages {
+            UIGraphicsBeginPDFPage()
+            renderer.drawPage(at: i, in: UIGraphicsGetPDFContextBounds())
+        }
 
-            if let viewWithTag = viewController.view.viewWithTag(wkWebView.tag) {
-                viewWithTag.removeFromSuperview() // remove hidden webview when pdf is generated
+        UIGraphicsEndPDFContext()
 
-                // clear WKWebView cache
-                if #available(iOS 9.0, *) {
-                    WKWebsiteDataStore.default().fetchDataRecords(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes()) { records in
-                        for record in records {
-                            WKWebsiteDataStore.default().removeData(ofTypes: record.dataTypes, for: [record], completionHandler: {})
-                        }
+        // Clean up the hidden webview and cache
+        if let containerView = webView.superview, let viewWithTag = containerView.viewWithTag(webView.tag) {
+            viewWithTag.removeFromSuperview()
+            if #available(iOS 9.0, *) {
+                WKWebsiteDataStore.default().fetchDataRecords(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes()) { records in
+                    for record in records {
+                        WKWebsiteDataStore.default().removeData(ofTypes: record.dataTypes, for: [record], completionHandler: {})
                     }
                 }
             }
-
-            // dispose urlObservation
-            self.urlObservation = nil
-            self.printing.onHtmlRendered(printJob: self, pdfData: pdfData as Data)
         }
+
+        // dispose urlObservation and temp context
+        urlObservation = nil
+        htmlRect = nil
+        htmlMargin = nil
+        htmlWebView = nil
+
+        // If the PDF is empty, report an error back to Flutter instead of sending empty data
+        if pdfData.length == 0 {
+            printing.onHtmlError(printJob: self, error: "Generated empty PDF from HTML")
+            return
+        }
+
+        printing.onHtmlRendered(printJob: self, pdfData: pdfData as Data)
     }
 
     static func pickPrinter(result: @escaping FlutterResult, withSourceRect rect: CGRect) {
@@ -367,7 +402,7 @@ public class PrintJob: UIPrintPageRenderer, UIPrintInteractionControllerDelegate
         }
 
         if UIDevice.current.userInterfaceIdiom == .pad {
-            if let viewController = UIApplication.shared.keyWindow?.rootViewController {
+            if let viewController = PrintJob_safeRootViewController() {
                 controller.present(from: rect, in: viewController.view, animated: true, completionHandler: pickPrinterCompletionHandler)
                 return
             }
@@ -443,5 +478,27 @@ public class PrintJob: UIPrintPageRenderer, UIPrintInteractionControllerDelegate
             "canListPrinters": false,
         ]
         return data
+    }
+
+    // MARK: - Safe VC helpers (avoid deprecated keyWindow and nil rootViewController)
+    private static func PrintJob_safeRootViewController() -> UIViewController? {
+        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let win = scene.windows.first(where: { $0.isKeyWindow }) {
+            return win.rootViewController
+        }
+        return UIApplication.shared.windows.first(where: { $0.isKeyWindow })?.rootViewController
+    }
+
+    private static func PrintJob_safeTopViewController(base: UIViewController? = PrintJob_safeRootViewController()) -> UIViewController? {
+        if let nav = base as? UINavigationController {
+            return PrintJob_safeTopViewController(base: nav.visibleViewController)
+        }
+        if let tab = base as? UITabBarController {
+            return PrintJob_safeTopViewController(base: tab.selectedViewController)
+        }
+        if let presented = base?.presentedViewController {
+            return PrintJob_safeTopViewController(base: presented)
+        }
+        return base
     }
 }
