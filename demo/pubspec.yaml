@@ -16,7 +16,7 @@ dependencies:
   pdf:
   printing:
   url_launcher: ^6.1.8
-  vector_math: ^2.1.4
+  vector_math: ^2.2.0
 
 dev_dependencies:
   # flutter_launcher_icons: ^0.10.0
@@ -30,6 +30,7 @@ dependency_overrides:
     path: ../pdf
   printing:
     path: ../printing
+  vector_math: ^2.2.0
 
 flutter:
   uses-material-design: true

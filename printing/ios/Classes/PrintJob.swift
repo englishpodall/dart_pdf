@@ -16,6 +16,7 @@
 
 import Flutter
 import WebKit
+import Foundation
 
 func dataProviderReleaseDataCallback(info _: UnsafeMutableRawPointer?, data: UnsafeRawPointer, size _: Int) {
     data.deallocate()
@@ -84,7 +85,7 @@ public class PrintJob: UIPrintPageRenderer, UIPrintInteractionControllerDelegate
             controller.delegate = self
 
             let printInfo = UIPrintInfo.printInfo()
-            printInfo.jobName = jobName!
+            printInfo.jobName = jobName ?? "Print Job"
             printInfo.outputType = .general
             if orientation != nil {
                 printInfo.orientation = orientation!
@@ -96,24 +97,26 @@ public class PrintJob: UIPrintPageRenderer, UIPrintInteractionControllerDelegate
             if self.printerName != nil {
                 let printerURL = URL(string: self.printerName!)
 
-                if printerURL == nil {
+                guard let printerURL = printerURL else {
                     self.printing.onCompleted(printJob: self, completed: false, error: "Unable to find printer URL")
                     return
                 }
 
-                let printerURLString = printerURL!.absoluteString
+                let printerURLString = printerURL.absoluteString
 
                 if !selectedPrinters.keys.contains(printerURLString) {
-                    selectedPrinters[printerURLString] = UIPrinter(url: printerURL!)
+                    selectedPrinters[printerURLString] = UIPrinter(url: printerURL)
                 }
 
-                selectedPrinters[printerURLString]!.contactPrinter { available in
-                    if !available {
-                        self.printing.onCompleted(printJob: self, completed: false, error: "Printer not available")
-                        return
-                    }
+                if let selectedPrinter = selectedPrinters[printerURLString] {
+                    selectedPrinter.contactPrinter { available in
+                        if !available {
+                            self.printing.onCompleted(printJob: self, completed: false, error: "Printer not available")
+                            return
+                        }
 
-                    controller.print(to: selectedPrinters[printerURLString]!, completionHandler: self.completionHandler)
+                        controller.print(to: selectedPrinter, completionHandler: self.completionHandler)
+                    }
                 }
             } else {
                 controller.present(animated: true, completionHandler: self.completionHandler)
@@ -149,23 +152,23 @@ public class PrintJob: UIPrintPageRenderer, UIPrintInteractionControllerDelegate
     }
 
     public func printInteractionController(_: UIPrintInteractionController, choosePaper paperList: [UIPrintPaper]) -> UIPrintPaper {
-        if currentSize == nil {
+        guard let currentSize = currentSize else {
             return paperList[0]
         }
 
         if forceCustomPrintPaper {
-            return CustomPrintPaper(size: currentSize!)
+            return CustomPrintPaper(size: currentSize)
         }
 
         for paper in paperList {
-            if (paper.paperSize.width == currentSize!.width && paper.paperSize.height == currentSize!.height) ||
-                (paper.paperSize.width == currentSize!.height && paper.paperSize.height == currentSize!.width)
+            if (paper.paperSize.width == currentSize.width && paper.paperSize.height == currentSize.height) ||
+                (paper.paperSize.width == currentSize.height && paper.paperSize.height == currentSize.width)
             {
                 return paper
             }
         }
 
-        let bestPaper = UIPrintPaper.bestPaper(forPageSize: currentSize!, withPapersFrom: paperList)
+        let bestPaper = UIPrintPaper.bestPaper(forPageSize: currentSize, withPapersFrom: paperList)
 
         return bestPaper
     }
@@ -192,11 +195,11 @@ public class PrintJob: UIPrintPageRenderer, UIPrintInteractionControllerDelegate
         controller.delegate = self
 
         let printInfo = UIPrintInfo.printInfo()
-        printInfo.jobName = jobName!
+        printInfo.jobName = jobName ?? "Print Job"
         printInfo.outputType = type
-        if orientation != nil {
-            printInfo.orientation = orientation!
-            orientation = nil
+        if let orientation = orientation {
+            printInfo.orientation = orientation
+            self.orientation = nil
         }
         controller.printInfo = printInfo
         controller.showsPaperSelectionForLoadedPapers = true
@@ -206,32 +209,36 @@ public class PrintJob: UIPrintPageRenderer, UIPrintInteractionControllerDelegate
         if printerID != nil {
             let printerURL = URL(string: printerID!)
 
-            if printerURL == nil {
+            guard let printerURL = printerURL else {
                 self.printing.onCompleted(printJob: self, completed: false, error: "Unable to find printer URL")
                 return
             }
 
-            let printerURLString = printerURL!.absoluteString
+            let printerURLString = printerURL.absoluteString
 
             if !selectedPrinters.keys.contains(printerURLString) {
-                selectedPrinters[printerURLString] = UIPrinter(url: printerURL!)
+                selectedPrinters[printerURLString] = UIPrinter(url: printerURL)
             }
 
             // Sometimes using UIPrinter(url:) gives a non-contactable printer.
             // https://stackoverflow.com/questions/34602302/creating-a-working-uiprinter-object-from-url-for-dialogue-free-printing
             // This lets use a printer saved during picking and fall back using a printer created with UIPrinter(url:)
-            if pickedPrinter != nil && selectedPrinters[printerURLString]!.url == pickedPrinter?.url {
-                controller.print(to: pickedPrinter!, completionHandler: completionHandler)
+            if let pickedPrinter = pickedPrinter, 
+               let selectedPrinter = selectedPrinters[printerURLString],
+               selectedPrinter.url == pickedPrinter.url {
+                controller.print(to: pickedPrinter, completionHandler: completionHandler)
                 return
             }
 
-            selectedPrinters[printerURLString]!.contactPrinter { available in
-                if !available {
-                    self.printing.onCompleted(printJob: self, completed: false, error: "Printer not available")
-                    return
-                }
+            if let selectedPrinter = selectedPrinters[printerURLString] {
+                selectedPrinter.contactPrinter { available in
+                    if !available {
+                        self.printing.onCompleted(printJob: self, completed: false, error: "Printer not available")
+                        return
+                    }
 
-                controller.print(to: selectedPrinters[printerURLString]!, completionHandler: self.completionHandler)
+                    controller.print(to: selectedPrinter, completionHandler: self.completionHandler)
+                }
             }
             return
         }
@@ -266,61 +273,65 @@ public class PrintJob: UIPrintPageRenderer, UIPrintInteractionControllerDelegate
         let activityViewController = UIActivityViewController(activityItems: [fileURL, body as Any], applicationActivities: nil)
         activityViewController.setValue(subject, forKey: "subject")
         if UIDevice.current.userInterfaceIdiom == .pad {
-            let controller: UIViewController? = UIApplication.shared.keyWindow?.rootViewController
-            activityViewController.popoverPresentationController?.sourceView = controller?.view
-            activityViewController.popoverPresentationController?.sourceRect = rect
+            if let controller = UIApplication.shared.keyWindow?.rootViewController {
+                activityViewController.popoverPresentationController?.sourceView = controller.view
+                activityViewController.popoverPresentationController?.sourceRect = rect
+            }
         }
         UIApplication.shared.keyWindow?.rootViewController?.present(activityViewController, animated: true)
     }
 
     func convertHtml(_ data: String, withPageSize rect: CGRect, andMargin margin: CGRect, andBaseUrl baseUrl: URL?) {
-        let viewController = UIApplication.shared.delegate?.window?!.rootViewController
-        let wkWebView = WKWebView(frame: viewController!.view.bounds)
+        guard let window = UIApplication.shared.delegate?.window,
+              let viewController = window?.rootViewController else {
+            printing.onHtmlRendered(printJob: self, pdfData: Data())
+            return
+        }
+        
+        let wkWebView = WKWebView(frame: viewController.view.bounds)
         wkWebView.isHidden = true
         wkWebView.tag = 100
-        viewController?.view.addSubview(wkWebView)
+        viewController.view.addSubview(wkWebView)
         wkWebView.loadHTMLString(data, baseURL: baseUrl ?? Bundle.main.bundleURL)
 
-        urlObservation = wkWebView.observe(\.isLoading, changeHandler: { _, _ in
-            // this is workaround for issue with loading local images
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                // assign the print formatter to the print page renderer
-                let renderer = UIPrintPageRenderer()
-                renderer.addPrintFormatter(wkWebView.viewPrintFormatter(), startingAtPageAt: 0)
+        // Use a simple timer instead of key-value observing to avoid key path issues
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            // assign the print formatter to the print page renderer
+            let renderer = UIPrintPageRenderer()
+            renderer.addPrintFormatter(wkWebView.viewPrintFormatter(), startingAtPageAt: 0)
 
-                // assign paperRect and printableRect values
-                renderer.setValue(rect, forKey: "paperRect")
-                renderer.setValue(margin, forKey: "printableRect")
+            // assign paperRect and printableRect values
+            renderer.setValue(rect, forKey: "paperRect")
+            renderer.setValue(margin, forKey: "printableRect")
 
-                // create pdf context and draw each page
-                let pdfData = NSMutableData()
-                UIGraphicsBeginPDFContextToData(pdfData, rect, nil)
+            // create pdf context and draw each page
+            let pdfData = NSMutableData()
+            UIGraphicsBeginPDFContextToData(pdfData, rect, nil)
 
-                for i in 0 ..< renderer.numberOfPages {
-                    UIGraphicsBeginPDFPage()
-                    renderer.drawPage(at: i, in: UIGraphicsGetPDFContextBounds())
-                }
+            for i in 0 ..< renderer.numberOfPages {
+                UIGraphicsBeginPDFPage()
+                renderer.drawPage(at: i, in: UIGraphicsGetPDFContextBounds())
+            }
 
-                UIGraphicsEndPDFContext()
+            UIGraphicsEndPDFContext()
 
-                if let viewWithTag = viewController?.view.viewWithTag(wkWebView.tag) {
-                    viewWithTag.removeFromSuperview() // remove hidden webview when pdf is generated
+            if let viewWithTag = viewController.view.viewWithTag(wkWebView.tag) {
+                viewWithTag.removeFromSuperview() // remove hidden webview when pdf is generated
 
-                    // clear WKWebView cache
-                    if #available(iOS 9.0, *) {
-                        WKWebsiteDataStore.default().fetchDataRecords(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes()) { records in
-                            for record in records {
-                                WKWebsiteDataStore.default().removeData(ofTypes: record.dataTypes, for: [record], completionHandler: {})
-                            }
+                // clear WKWebView cache
+                if #available(iOS 9.0, *) {
+                    WKWebsiteDataStore.default().fetchDataRecords(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes()) { records in
+                        for record in records {
+                            WKWebsiteDataStore.default().removeData(ofTypes: record.dataTypes, for: [record], completionHandler: {})
                         }
                     }
                 }
-
-                // dispose urlObservation
-                self.urlObservation = nil
-                self.printing.onHtmlRendered(printJob: self, pdfData: pdfData as Data)
             }
-        })
+
+            // dispose urlObservation
+            self.urlObservation = nil
+            self.printing.onHtmlRendered(printJob: self, pdfData: pdfData as Data)
+        }
     }
 
     static func pickPrinter(result: @escaping FlutterResult, withSourceRect rect: CGRect) {
@@ -339,7 +350,10 @@ public class PrintJob: UIPrintPageRenderer, UIPrintInteractionControllerDelegate
                 return
             }
 
-            let printer = printerPickerController.selectedPrinter!
+            guard let printer = printerPickerController.selectedPrinter else {
+                result(nil)
+                return
+            }
             let data: NSDictionary = [
                 "url": printer.url.absoluteString as Any,
                 "name": printer.displayName as Any,
@@ -353,9 +367,8 @@ public class PrintJob: UIPrintPageRenderer, UIPrintInteractionControllerDelegate
         }
 
         if UIDevice.current.userInterfaceIdiom == .pad {
-            let viewController: UIViewController? = UIApplication.shared.keyWindow?.rootViewController
-            if viewController != nil {
-                controller.present(from: rect, in: viewController!.view, animated: true, completionHandler: pickPrinterCompletionHandler)
+            if let viewController = UIApplication.shared.keyWindow?.rootViewController {
+                controller.present(from: rect, in: viewController.view, animated: true, completionHandler: pickPrinterCompletionHandler)
                 return
             }
         }

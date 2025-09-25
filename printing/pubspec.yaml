@@ -46,6 +46,7 @@ dependency_overrides:
     path: ../pdf
   pdf_widget_wrapper:
    path: ../widget_wrapper
+  vector_math: ^2.2.0
 
 flutter:
   plugin:

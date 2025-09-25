@@ -31,12 +31,12 @@ public class PrintingPlugin: NSObject, FlutterPlugin {
 
     @objc
     public static func setDocument(job: UInt32, doc: UnsafePointer<UInt8>, size: UInt64) {
-        instance!.jobs[job]?.setDocument(Data(bytes: doc, count: Int(size)))
+        instance?.jobs[job]?.setDocument(Data(bytes: doc, count: Int(size)))
     }
 
     @objc
     public static func setError(job: UInt32, message: UnsafePointer<CChar>) {
-        instance!.jobs[job]?.cancelJob(String(cString: message))
+        instance?.jobs[job]?.cancelJob(String(cString: message))
     }
 
     /// Entry point
@@ -48,22 +48,30 @@ public class PrintingPlugin: NSObject, FlutterPlugin {
 
     /// Flutter method handlers
     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
-        let args = call.arguments! as! [String: Any]
+        guard let args = call.arguments as? [String: Any] else {
+            result(FlutterMethodNotImplemented)
+            return
+        }
         if call.method == "printPdf" {
-            let name = args["name"] as! String
+            guard let name = args["name"] as? String,
+                  let width = args["width"] as? NSNumber,
+                  let height = args["height"] as? NSNumber,
+                  let marginLeft = args["marginLeft"] as? NSNumber,
+                  let marginTop = args["marginTop"] as? NSNumber,
+                  let marginRight = args["marginRight"] as? NSNumber,
+                  let marginBottom = args["marginBottom"] as? NSNumber,
+                  let jobIndex = args["job"] as? Int,
+                  let dynamic = args["dynamic"] as? Bool,
+                  let forceCustomPrintPaper = args["forceCustomPrintPaper"] as? Bool else {
+                result(FlutterMethodNotImplemented)
+                return
+            }
+            
             let printer = args["printer"] as? String
-            let width = CGFloat((args["width"] as! NSNumber).floatValue)
-            let height = CGFloat((args["height"] as! NSNumber).floatValue)
-            let marginLeft = CGFloat((args["marginLeft"] as! NSNumber).floatValue)
-            let marginTop = CGFloat((args["marginTop"] as! NSNumber).floatValue)
-            let marginRight = CGFloat((args["marginRight"] as! NSNumber).floatValue)
-            let marginBottom = CGFloat((args["marginBottom"] as! NSNumber).floatValue)
-            let printJob = PrintJob(printing: self, index: args["job"] as! Int)
-            let dynamic = args["dynamic"] as! Bool
-            let forceCustomPrintPaper = args["forceCustomPrintPaper"] as! Bool
+            let printJob = PrintJob(printing: self, index: jobIndex)
 
             let outputType: UIPrintInfo.OutputType
-            switch args["outputType"] as! Int {
+            switch args["outputType"] as? Int ?? 0 {
             case 0:
                 outputType = UIPrintInfo.OutputType.general
             case 1:
@@ -76,17 +84,17 @@ public class PrintingPlugin: NSObject, FlutterPlugin {
                 outputType = UIPrintInfo.OutputType.general
             }
 
-            jobs[args["job"] as! UInt32] = printJob
+            jobs[UInt32(jobIndex)] = printJob
             printJob.printPdf(name: name,
                               withPageSize: CGSize(
-                                  width: width,
-                                  height: height
+                                  width: CGFloat(width.floatValue),
+                                  height: CGFloat(height.floatValue)
                               ),
                               andMargin: CGRect(
-                                  x: marginLeft,
-                                  y: marginTop,
-                                  width: width - marginRight - marginLeft,
-                                  height: height - marginBottom - marginTop
+                                  x: CGFloat(marginLeft.floatValue),
+                                  y: CGFloat(marginTop.floatValue),
+                                  width: CGFloat(width.floatValue) - CGFloat(marginRight.floatValue) - CGFloat(marginLeft.floatValue),
+                                  height: CGFloat(height.floatValue) - CGFloat(marginBottom.floatValue) - CGFloat(marginTop.floatValue)
                               ),
                               withPrinter: printer,
                               dynamically: dynamic,
@@ -94,7 +102,11 @@ public class PrintingPlugin: NSObject, FlutterPlugin {
                               forceCustomPrintPaper: forceCustomPrintPaper)
             result(NSNumber(value: 1))
         } else if call.method == "sharePdf" {
-            let object = args["doc"] as! FlutterStandardTypedData
+            guard let object = args["doc"] as? FlutterStandardTypedData,
+                  let name = args["name"] as? String else {
+                result(FlutterMethodNotImplemented)
+                return
+            }
             PrintJob.sharePdf(
                 data: object.data,
                 withSourceRect: CGRect(
@@ -103,22 +115,28 @@ public class PrintingPlugin: NSObject, FlutterPlugin {
                     width: CGFloat((args["w"] as? NSNumber)?.floatValue ?? 0.0),
                     height: CGFloat((args["h"] as? NSNumber)?.floatValue ?? 0.0)
                 ),
-                andName: args["name"] as! String,
+                andName: name,
                 subject: args["subject"] as? String,
                 body: args["body"] as? String
             )
             result(NSNumber(value: 1))
         } else if call.method == "convertHtml" {
+            guard let html = args["html"] as? String,
+                  let jobIndex = args["job"] as? Int else {
+                result(FlutterMethodNotImplemented)
+                return
+            }
+            
             let width = CGFloat((args["width"] as? NSNumber)?.floatValue ?? 0.0)
             let height = CGFloat((args["height"] as? NSNumber)?.floatValue ?? 0.0)
             let marginLeft = CGFloat((args["marginLeft"] as? NSNumber)?.floatValue ?? 0.0)
             let marginTop = CGFloat((args["marginTop"] as? NSNumber)?.floatValue ?? 0.0)
             let marginRight = CGFloat((args["marginRight"] as? NSNumber)?.floatValue ?? 0.0)
             let marginBottom = CGFloat((args["marginBottom"] as? NSNumber)?.floatValue ?? 0.0)
-            let printJob = PrintJob(printing: self, index: args["job"] as! Int)
+            let printJob = PrintJob(printing: self, index: jobIndex)
 
             printJob.convertHtml(
-                args["html"] as! String,
+                html,
                 withPageSize: CGRect(
                     x: 0.0,
                     y: 0.0,
@@ -144,13 +162,18 @@ public class PrintingPlugin: NSObject, FlutterPlugin {
         } else if call.method == "printingInfo" {
             result(PrintJob.printingInfo())
         } else if call.method == "rasterPdf" {
-            let doc = args["doc"] as! FlutterStandardTypedData
+            guard let doc = args["doc"] as? FlutterStandardTypedData,
+                  let scale = args["scale"] as? NSNumber,
+                  let jobIndex = args["job"] as? Int else {
+                result(FlutterMethodNotImplemented)
+                return
+            }
+            
             let pages = args["pages"] as? [Int]
-            let scale = CGFloat((args["scale"] as! NSNumber).floatValue)
-            let printJob = PrintJob(printing: self, index: args["job"] as! Int)
+            let printJob = PrintJob(printing: self, index: jobIndex)
             printJob.rasterPdf(data: doc.data,
                                pages: pages,
-                               scale: scale)
+                               scale: CGFloat(scale.floatValue))
             result(NSNumber(value: 1))
         } else {
             result(FlutterMethodNotImplemented)
